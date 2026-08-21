@@ -1,5 +1,6 @@
 from fastapi import FastAPI, UploadFile, File
 from faster_whisper import WhisperModel
+from fastapi.middleware.cors import CORSMiddleware
 import os
 
 import sqlite3
@@ -14,6 +15,14 @@ gemini_model = genai.GenerativeModel("gemini-3.6-flash")
 
 
 app = FastAPI()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # Load the whisper model once when server starts (not on every request)
 model = WhisperModel("base", device="cpu", compute_type="int8")
@@ -68,13 +77,19 @@ async def upload_audio(file: UploadFile = File(...)):
         (file.filename, transcript)
     )
     conn.commit()
+    new_id = cursor.lastrowid
     conn.close()
 
     return {
+        "id": new_id,
         "filename": file.filename,
         "language_detected": info.language,
         "transcript": transcript
     }
+
+    
+
+    
 
 @app.post("/summarize")
 async def summarize_transcript(meeting_id: int):
