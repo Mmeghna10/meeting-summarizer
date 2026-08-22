@@ -4,7 +4,7 @@ Transcribe meeting audio and generate action-oriented summaries automatically. U
 
 ## Demo
 
-[Add your demo video link here]
+https://drive.google.com/file/d/1g4AhaJ6ZhtU-VKEYVJ1SiJGW7keyrXNK/view?usp=sharing
 
 ## Features
 
