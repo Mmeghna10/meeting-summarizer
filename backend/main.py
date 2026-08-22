@@ -88,9 +88,6 @@ async def upload_audio(file: UploadFile = File(...)):
     }
 
     
-
-    
-
 @app.post("/summarize")
 async def summarize_transcript(meeting_id: int):
     conn = sqlite3.connect("meetings.db")
