@@ -1,126 +1,124 @@
-# Recap — Meeting Summarizer
+Recap - AI Meeting Summarizer with RAG Chat
 
-Transcribe meeting audio and generate action-oriented summaries automatically. Upload a recording, and Recap gives you a full transcript, a concise summary, key decisions, and clearly owned action items.
+A tool that takes a meeting recording and turns it into something actually useful - a transcript, a summary, decisions, action items, and now a chatbot you can ask questions to across all your past meetings.
 
-## Demo
+I built this originally as a placement assignment, then kept extending it because the core idea (turning messy audio into structured, searchable knowledge) had a lot more room to grow.
 
-https://drive.google.com/file/d/1g4AhaJ6ZhtU-VKEYVJ1SiJGW7keyrXNK/view?usp=sharing
+What it actually does
 
-## Features
+You upload an audio file. In the background:
 
-- Upload meeting audio (`.mp3`, `.wav`, `.m4a`) through a clean web interface
-- Automatic speech-to-text transcription using `faster-whisper` (runs locally, no external API cost)
-- LLM-powered summarization that extracts:
-  - A concise 3–5 sentence summary
-  - Key decisions made during the meeting
-  - Action items, tagged with the responsible person where mentioned
-- Transcript and summary are persisted in a local database
+The audio gets transcribed to text
+That transcript gets sent to an LLM which pulls out a summary, key decisions, and action items (with owner names when they're mentioned)
+The transcript also gets embedded and stored in a vector database
+You can then open the chat widget and ask things like "what did we decide about the launch" or "who's handling the backend testing" and it'll search across every meeting you've processed and answer using the actual transcript content, not a guess
 
-## Tech Stack
+That last part is the interesting bit technically - it's a proper RAG (Retrieval-Augmented Generation) setup, not just a chatbot wrapper around an LLM.
 
-| Layer | Technology |
-|---|---|
-| Frontend | React (Vite) |
-| Backend | FastAPI (Python) |
-| Speech-to-Text | faster-whisper (local, open-source) |
-| LLM | Google Gemini (`gemini-3.6-flash`) |
-| Database | SQLite |
+Tech stack and why
+FastAPI for the backend - it's fast to build with, gives you automatic API docs at /docs for free which made testing everything a lot easier while developing
+faster-whisper for transcription - runs locally on CPU, no API key or per-minute cost, and accuracy is genuinely good for the base model
+Google Gemini (gemini-3.6-flash) for the LLM work - free tier was generous enough for a project like this, and it's solid at following structured output instructions
+SQLite for storing meetings, transcripts, and summaries - didn't need anything heavier for this scale
+ChromaDB as the vector database for the RAG chatbot - runs locally, persists to disk, no external service needed
+sentence-transformers (all-MiniLM-L6-v2) for generating embeddings - small, fast, free, runs on CPU
+React + Vite for the frontend, custom-styled (no component library) because I wanted this to look like an actual product, not a bootstrap template
+Architecture
+                    ┌─────────────────────┐
+                    │   React Frontend     │
+                    │  (upload + results   │
+                    │   + chat widget)      │
+                    └──────────┬───────────┘
+                               │ HTTP
+                    ┌──────────▼───────────┐
+                    │   FastAPI Backend     │
+                    ├───────────────────────┤
+                    │  POST /upload         │──► faster-whisper ──► transcript
+                    │  POST /summarize      │──► Gemini (structured prompt)
+                    │  POST /chat           │──► embed question ──► search
+                    └──────────┬────────────┘         │
+                               │                       ▼
+                    ┌──────────▼──────────┐   ┌────────────────┐
+                    │    SQLite            │   │   ChromaDB     │
+                    │  meetings, transcript│   │  (embeddings   │
+                    │  summary, decisions, │   │   per meeting) │
+                    │  action items        │   └────────────────┘
+                    └───────────────────────┘
+The summarization flow
 
-## Architecture
+When /summarize is called with a meeting id, it pulls the transcript from SQLite and sends it to Gemini with a prompt that forces a specific JSON shape back:
 
-```
-[React Frontend]
-   → Upload audio file
-   → Display transcript + summary + action items
+{
+  "summary": "...",
+  "key_decisions": [...],
+  "action_items": [...]
+}
 
-        ↓ (multipart/form-data)
+I spent a decent amount of time on this prompt specifically because LLMs don't always return clean JSON on their own - sometimes they wrap it in markdown code fences, sometimes they add a sentence before or after. There's a small cleanup step in the code that strips markdown fences if Gemini adds them, and the whole thing is wrapped in a try/except so a bad response doesn't crash the app, it just returns an error message instead.
 
-[FastAPI Backend]
-   POST /upload      → saves audio, runs faster-whisper → transcript
-   POST /summarize    → sends transcript to Gemini → structured summary
+The RAG chat flow
 
-        ↓
+This is the part I'm most proud of, honestly. Here's what happens step by step when someone asks a question:
 
-[SQLite Database]
-   meetings(id, filename, transcript, summary, key_decisions, action_items, created_at)
-```
+The moment a meeting gets summarized, its transcript is also converted into an embedding (a vector of numbers that represents the meaning of the text, not just the words) using all-MiniLM-L6-v2, and that embedding gets stored in ChromaDB along with the meeting's filename and id
+When a question comes in through /chat, it gets embedded the exact same way
+ChromaDB compares the question's embedding against every stored meeting embedding and returns the most similar ones (top 3, currently)
+Those retrieved transcript chunks get stuffed into a prompt along with the original question, and Gemini is told explicitly to only answer using that context - not from its own general knowledge
+The answer comes back along with which meeting(s) it pulled the info from, so there's some transparency about where the answer is coming from instead of it just being a black box
 
-## Setup Instructions
+This means if you have 20 meetings stored and ask a question, it doesn't send all 20 transcripts to the LLM (which would be slow and expensive) - it only sends the ones that are actually relevant to your question. That's the whole point of the "retrieval" step in RAG.
 
-### Prerequisites
-- Python 3.12
-- Node.js (LTS)
-- A free Google Gemini API key from [aistudio.google.com/apikey](https://aistudio.google.com/apikey)
-
-### 1. Clone the repository
-```bash
-git clone <your-repo-url>
-cd meeting-summarizer
-```
-
-### 2. Backend setup
-```bash
-cd backend
-python -m venv venv
-venv\Scripts\activate        # Windows
-# source venv/bin/activate   # macOS/Linux
-
-pip install -r requirements.txt
-```
-
-Create a `.env` file inside `backend/` with:
-```
-GEMINI_API_KEY=your_gemini_api_key_here
-```
-
-Run the backend:
-```bash
-uvicorn main:app --reload
-```
-Backend runs at `http://127.0.0.1:8000`. Interactive API docs available at `http://127.0.0.1:8000/docs`.
-
-### 3. Frontend setup
-Open a new terminal:
-```bash
-cd frontend
-npm install
-npm run dev
-```
-Frontend runs at `http://localhost:5173`.
-
-### 4. Usage
-1. Open `http://localhost:5173` in your browser
-2. Drag and drop (or click to browse) a meeting audio file
-3. Click **Process meeting**
-4. View the transcript alongside the generated summary, key decisions, and action items
-
-## Prompt Design
-
-The summarization prompt explicitly instructs the LLM to return structured JSON, so the output can be reliably rendered in the UI without post-processing guesswork:
-
-```
-Summarize this meeting transcript into a concise summary, key decisions,
-and action items (with owner names where mentioned). Return only valid JSON
-in a fixed schema.
-```
-
-This was tested against both clean and rambling/unstructured transcripts to ensure consistent output quality.
-
-## Project Structure
-```
+Project structure
 meeting-summarizer/
 ├── backend/
-│   ├── main.py              # FastAPI app: upload, transcription, summarization
+│   ├── main.py              # everything - endpoints, DB, RAG logic
 │   ├── requirements.txt
-│   └── uploads/              # (gitignored) uploaded audio files
+│   ├── uploads/              # gitignored - raw audio files land here temporarily
+│   └── chroma_db/            # gitignored - vector DB storage, created automatically
 ├── frontend/
 │   ├── src/
-│   │   ├── App.jsx           # Main UI: upload, results display
+│   │   ├── App.jsx           # upload UI, results, and the chat widget
 │   │   └── App.css
 │   └── package.json
 └── README.md
-```
+Running it locally
 
-## Notes
-- `faster-whisper` runs the `base` model locally on CPU — no external speech-to-text API keys or costs required.
-- The Gemini API free tier is sufficient for running and demoing this project.
+You'll need Python 3.12, Node.js, and a free Gemini API key from aistudio.google.com/apikey.
+
+Backend:
+
+bash
+cd backend
+python -m venv venv
+venv\Scripts\activate        # on Windows
+pip install -r requirements.txt
+
+Create a .env file in backend/ with:
+
+GEMINI_API_KEY=your_key_here
+
+Then run it:
+
+bash
+uvicorn main:app --reload
+
+First run will take a bit longer since it downloads the Whisper model and the embedding model - both are one-time downloads, everything runs offline after that.
+
+Frontend:
+
+bash
+cd frontend
+npm install
+npm run dev
+
+Open http://localhost:5173, drag in an audio file, hit "Process meeting," and once it's done, click the round chat icon in the bottom right to ask questions about it.
+
+Some things I learned building this
+Forcing structured JSON output from an LLM sounds simple but you have to actually plan for it failing sometimes - models occasionally add extra text or formatting even when told not to
+Vector search only helps if what you're storing and what you're searching for are embedded the same way - I initially almost made the mistake of using different chunking for storage vs. query time
+A generic-looking frontend makes a project feel like a tutorial clone. Spending time on actual visual identity (the color palette, the waveform motif tied to the audio subject, custom fonts) made a real difference in how "finished" this feels
+Testing a fresh clone of your own repo before submitting catches problems no amount of testing on your own machine will - I caught a couple of setup issues this way that would've looked bad in front of an evaluator
+What's next (if I keep going)
+Speaker diarization, so the transcript shows who said what instead of one continuous block
+Exporting action items directly to Google Calendar or Notion instead of just displaying them
+A simple analytics view - most frequently assigned people, meeting frequency over time, that kind of thing
