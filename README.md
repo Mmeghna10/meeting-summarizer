@@ -23,36 +23,32 @@ SQLite for storing meetings, transcripts, and summaries - didn't need anything h
 ChromaDB as the vector database for the RAG chatbot - runs locally, persists to disk, no external service needed
 sentence-transformers (all-MiniLM-L6-v2) for generating embeddings - small, fast, free, runs on CPU
 React + Vite for the frontend, custom-styled (no component library) because I wanted this to look like an actual product, not a bootstrap template
-
 Architecture
-                    ┌─────────────────────┐
-                    │   React Frontend     │
-                    │  (upload + results   │
-                    │   + chat widget)      │
-                    └──────────┬───────────┘
-                               │ HTTP
-                    ┌──────────▼───────────┐
-                    │   FastAPI Backend     │
-                    ├───────────────────────┤
-                    │  POST /upload         │──► faster-whisper ──► transcript
-                    │  POST /summarize      │──► Gemini (structured prompt)
-                    │  POST /chat           │──► embed question ──► search
-                    └──────────┬────────────┘         │
-                               │                       ▼
-                    ┌──────────▼──────────┐   ┌────────────────┐
-                    │    SQLite            │   │   ChromaDB     │
-                    │  meetings, transcript│   │  (embeddings   │
-                    │  summary, decisions, │   │   per meeting) │
-                    │  action items        │   └────────────────┘
-                    └───────────────────────┘
+HTTP
+POST /upload
+transcript
+POST /summarize
+embed transcript
+POST /chat
+similarity search
+relevant chunks
+React Frontendupload + results + chatwidget
+FastAPI Backend
+faster-whisper
+SQLite
+Geministructured prompt
+ChromaDB
+Embed question
+Geminianswers using context
 The summarization flow
 
 When /summarize is called with a meeting id, it pulls the transcript from SQLite and sends it to Gemini with a prompt that forces a specific JSON shape back:
 
+json
 {
   "summary": "...",
-  "key_decisions": [...],
-  "action_items": [...]
+  "key_decisions": ["...", "..."],
+  "action_items": ["...", "..."]
 }
 
 I spent a decent amount of time on this prompt specifically because LLMs don't always return clean JSON on their own - sometimes they wrap it in markdown code fences, sometimes they add a sentence before or after. There's a small cleanup step in the code that strips markdown fences if Gemini adds them, and the whole thing is wrapped in a try/except so a bad response doesn't crash the app, it just returns an error message instead.
@@ -70,7 +66,6 @@ The answer comes back along with which meeting(s) it pulled the info from, so th
 This means if you have 20 meetings stored and ask a question, it doesn't send all 20 transcripts to the LLM (which would be slow and expensive) - it only sends the ones that are actually relevant to your question. That's the whole point of the "retrieval" step in RAG.
 
 Project structure
-
 meeting-summarizer/
 ├── backend/
 │   ├── main.py              # everything - endpoints, DB, RAG logic
