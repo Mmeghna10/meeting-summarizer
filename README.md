@@ -23,6 +23,7 @@ SQLite for storing meetings, transcripts, and summaries - didn't need anything h
 ChromaDB as the vector database for the RAG chatbot - runs locally, persists to disk, no external service needed
 sentence-transformers (all-MiniLM-L6-v2) for generating embeddings - small, fast, free, runs on CPU
 React + Vite for the frontend, custom-styled (no component library) because I wanted this to look like an actual product, not a bootstrap template
+
 Architecture
                     ┌─────────────────────┐
                     │   React Frontend     │
@@ -69,6 +70,7 @@ The answer comes back along with which meeting(s) it pulled the info from, so th
 This means if you have 20 meetings stored and ask a question, it doesn't send all 20 transcripts to the LLM (which would be slow and expensive) - it only sends the ones that are actually relevant to your question. That's the whole point of the "retrieval" step in RAG.
 
 Project structure
+
 meeting-summarizer/
 ├── backend/
 │   ├── main.py              # everything - endpoints, DB, RAG logic
