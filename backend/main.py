@@ -17,12 +17,30 @@ load_dotenv()
 genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 gemini_model = genai.GenerativeModel("gemini-3.6-flash")
 
+# ---- Deployment-friendly path config ----
+# Locally this defaults to the current folder (same as before).
+# On Azure, set DATA_DIR=/home/data as an App Setting so this survives restarts,
+# since only /home is guaranteed persistent on App Service Linux.
+DATA_DIR = os.getenv("DATA_DIR", ".")
+os.makedirs(DATA_DIR, exist_ok=True)
+
+DB_PATH = os.path.join(DATA_DIR, "meetings.db")
+UPLOAD_DIR = os.path.join(DATA_DIR, "uploads")
+CHROMA_DIR = os.path.join(DATA_DIR, "chroma_db")
+
+# ---- Deployment-friendly CORS config ----
+# Locally this defaults to your Vite dev server.
+# On Azure, set FRONTEND_URL as an App Setting to your deployed Static Web App URL.
+default_origins = ["http://localhost:5173"]
+frontend_url = os.getenv("FRONTEND_URL")
+if frontend_url:
+    default_origins.append(frontend_url)
 
 app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
+    allow_origins=default_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -31,17 +49,16 @@ app.add_middleware(
 # Load the whisper model once when server starts (not on every request)
 model = WhisperModel("base", device="cpu", compute_type="int8")
 
-UPLOAD_DIR = "uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 # ---- RAG setup ----
 embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
-chroma_client = chromadb.PersistentClient(path="chroma_db")
+chroma_client = chromadb.PersistentClient(path=CHROMA_DIR)
 collection = chroma_client.get_or_create_collection(name="meetings")
 
 
 def init_db():
-    conn = sqlite3.connect("meetings.db")
+    conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS meetings (
@@ -54,7 +71,6 @@ def init_db():
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
-    # New table: each action item tracked individually with a status
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS action_items (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -90,7 +106,7 @@ async def upload_audio(file: UploadFile = File(...)):
     segments, info = model.transcribe(file_path)
     transcript = " ".join([segment.text for segment in segments])
 
-    conn = sqlite3.connect("meetings.db")
+    conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute(
         "INSERT INTO meetings (filename, transcript) VALUES (?, ?)",
@@ -110,7 +126,7 @@ async def upload_audio(file: UploadFile = File(...)):
 
 @app.post("/summarize")
 async def summarize_transcript(meeting_id: int):
-    conn = sqlite3.connect("meetings.db")
+    conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute("SELECT transcript, filename FROM meetings WHERE id = ?", (meeting_id,))
     row = cursor.fetchone()
@@ -156,7 +172,6 @@ Transcript:
 
     action_items = result.get("action_items", [])
 
-    # Store a display-friendly string version on the meetings row (for the results panel)
     display_items = [f"{item.get('owner', 'Unassigned')}: {item.get('task', '')}" for item in action_items]
 
     cursor.execute(
@@ -169,7 +184,6 @@ Transcript:
         )
     )
 
-    # Insert each action item as its own trackable row
     new_item_ids = []
     for item in action_items:
         cursor.execute(
@@ -180,7 +194,6 @@ Transcript:
 
     conn.commit()
 
-    # ---- Accountability check: does this transcript complete any PREVIOUS open action items? ----
     cursor.execute(
         "SELECT id, owner, task FROM action_items WHERE status = 'open' AND meeting_id != ?",
         (meeting_id,)
@@ -229,11 +242,10 @@ If none appear completed, return {{"completed_ids": []}}.
                 auto_completed.append(item_id)
             conn.commit()
         except json.JSONDecodeError:
-            pass  # if this check fails, we just skip auto-completion silently
+            pass
 
     conn.close()
 
-    # ---- RAG: embed and store this transcript in the vector database ----
     embedding = embedding_model.encode(transcript).tolist()
     collection.upsert(
         ids=[str(meeting_id)],
@@ -248,7 +260,7 @@ If none appear completed, return {{"completed_ids": []}}.
 
 @app.get("/action-items")
 async def get_action_items(status: str = None):
-    conn = sqlite3.connect("meetings.db")
+    conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
 
     if status:
@@ -286,7 +298,7 @@ async def get_action_items(status: str = None):
 
 
 class StatusUpdate(BaseModel):
-    status: str  # "open" or "done"
+    status: str
 
 
 @app.patch("/action-items/{item_id}")
@@ -294,7 +306,7 @@ async def update_action_item(item_id: int, update: StatusUpdate):
     if update.status not in ("open", "done"):
         return {"error": "status must be 'open' or 'done'"}
 
-    conn = sqlite3.connect("meetings.db")
+    conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
 
     if update.status == "done":
@@ -313,7 +325,6 @@ async def update_action_item(item_id: int, update: StatusUpdate):
     return {"success": True}
 
 
-# ---- RAG Chatbot endpoint ----
 class ChatRequest(BaseModel):
     question: str
 
