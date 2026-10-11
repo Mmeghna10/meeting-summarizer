@@ -169,6 +169,4 @@ Open `http://localhost:5173`, drag in an audio file, hit "Process meeting," and 
 - Exporting action items directly to Google Calendar or Notion instead of just PDF
 - A simple analytics view - most frequently assigned people, meeting frequency over time, completion rate over time
 
-## Demo
 
-[link to demo video]
